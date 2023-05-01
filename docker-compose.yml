@@ -75,8 +75,8 @@ services:
   solr:
     image: ams/solr:8
     build:
-      context: solr
-      dockerfile: Dockerfile
+      context: ./solr
+      target: ams-solr
     env_file:
       - .env
     environment:
