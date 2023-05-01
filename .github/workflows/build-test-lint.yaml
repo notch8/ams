@@ -86,7 +86,6 @@ jobs:
             ${{ env.REGISTRY }}/${{ env.REPO_LOWER }}:${{ env.TAG }}
           target: ams-base
       - name: Build and push worker
-        if: ams-worker
         uses: docker/build-push-action@v3
         with:
           build-args: |
