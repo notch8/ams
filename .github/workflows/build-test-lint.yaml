@@ -1,0 +1,260 @@
+name: "Build & Test Docker Images"
+on:
+  pull_request:
+    branches:
+      - develop
+      - main
+
+env:
+  REGISTRY: ghcr.io
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Set env
+        run: >-
+          echo "TAG=${HEAD_TAG::8}" >> ${GITHUB_ENV};
+          echo ${HEAD_TAG::8}
+        env:
+          HEAD_TAG: ${{ github.event.pull_request.head.sha || github.sha }}
+        shell: bash
+      - name: Downcase repo
+        env:
+          REPO: "${{ github.repository }}"
+        run: |
+          echo "REPO_LOWER=${REPO,,}" >> ${GITHUB_ENV}
+        shell: bash
+      - name: Checkout code
+        uses: actions/checkout@v3
+        with:
+          submodules: true
+          token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v2
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v2
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@v2
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Pull from cache to speed up build
+        run: >-
+          touch .env.development;
+          touch .env;
+          TAG=latest docker-compose pull web || true
+      - name: Retag action for web
+        id: meta-web
+        uses: docker/metadata-action@v4.1.1
+        with:
+          images: |
+            name=${{ env.REGISTRY }}/${{ env.REPO_LOWER }}
+          tags: |
+            type=raw,value=latest,enable={{is_default_branch}}
+      - name: Retag action for worker
+        id: meta-worker
+        uses: docker/metadata-action@v4.1.1
+        with:
+          images: |
+            name=${{ env.REGISTRY }}/${{ env.REPO_LOWER }}/worker
+          tags: |
+            type=raw,value=latest,enable={{is_default_branch}}
+      - name: Retag action for solr
+        id: meta-solr
+        uses: docker/metadata-action@v4.1.1
+        with:
+          images: |
+            name=${{ env.REGISTRY }}/${{ env.REPO_LOWER }}/solr
+          tags: |
+            type=raw,value=latest,enable={{is_default_branch}}
+      - name: Build and push web
+        uses: docker/build-push-action@v3
+        with:
+          build-args: |
+            APP_PATH=.
+          cache-from: type=registry,ref=${{ env.REGISTRY }}/${{ env.REPO_LOWER }}:${{ env.TAG }}
+          context: .
+          file: ./Dockerfile
+          platforms: "linux/amd64,linux/arm64"
+          push: true
+          tags: |
+            ${{ steps.meta-web.outputs.tags }}
+            ${{ env.REGISTRY }}/${{ env.REPO_LOWER }}:${{ env.TAG }}
+          target: ams-base
+      - name: Build and push worker
+        if: ams-worker
+        uses: docker/build-push-action@v3
+        with:
+          build-args: |
+            APP_PATH=.
+          cache-from: type=registry,ref=${{ env.REGISTRY }}/${{ env.REPO_LOWER }}/worker:${{ env.TAG }}
+          context: .
+          file: ./Dockerfile
+          platforms: "linux/amd64,linux/arm64"
+          push: true
+          tags: |
+            ${{ steps.meta-worker.outputs.tags }}
+            ${{ env.REGISTRY }}/${{ env.REPO_LOWER }}/worker:${{ env.TAG }}
+          target: ams-worker
+      - name: Build and push solr
+        uses: docker/build-push-action@v3
+        with:
+          cache-from: type=registry,ref=${{ env.REGISTRY }}/${{ env.REPO_LOWER }}/solr:${{ env.TAG }}
+          context: ./solr
+          platforms: "linux/amd64,linux/arm64"
+          push: true
+          tags: |
+            ${{ steps.meta-solr.outputs.tags }}
+            ${{ env.REGISTRY }}/${{ env.REPO_LOWER }}/solr:${{ env.TAG }}
+          target: ams-solr
+
+  lint:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Set env
+        run: >-
+          echo "TAG=${HEAD_TAG::8}" >> ${GITHUB_ENV};
+          echo ${HEAD_TAG::8}
+        env:
+          HEAD_TAG: ${{ github.event.pull_request.head.sha || github.sha }}
+        shell: bash
+      - name: Downcase repo
+        env:
+          REPO: "${{ github.repository }}"
+        run: |
+          echo "REPO_LOWER=${REPO,,}" >> ${GITHUB_ENV}
+        shell: bash
+      - name: Checkout code
+        uses: actions/checkout@v3
+        with:
+          submodules: true
+          token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v2
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v2
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@v2
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Pull image to prevent build
+        run: >-
+          cd ${{ inputs.subdir }};
+          touch .env.development;
+          touch .env;
+          docker-compose pull web
+      - name: Pull worker image to prevent build
+        run: >-
+          cd ${{ inputs.subdir }};
+          docker-compose pull worker
+        if: ${{ inputs.worker }}
+      - name: Run Rubocop
+        run: >-
+          [ -f "db/schema.rb" ] && chmod 777 db/schema.rb;
+          docker-compose run web bundle exec rubocop --parallel --format progress
+      - name: Publish Test Report
+        uses: mikepenz/action-junit-report@v3
+        if: always() # always run even if the previous step fails
+        with:
+          report_paths: 'rubocop*.xml'
+
+  test:
+    needs: build
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # Set N number of parallel jobs you want to run tests on.
+        # Use higher number if you have slow tests to split them on more parallel jobs.
+        # Remember to update ci_node_index below to 0..N-1
+        ci_node_total: [3]
+        # set N-1 indexes for parallel jobs
+        # When you run 2 parallel jobs then first job will have index 0, the second job will have index 1 etc
+        ci_node_index: [0, 1, 2]
+    env:
+      ALLOW_ANONYMOUS_LOGIN: "yes"
+      CONFDIR: "/app/samvera/hyrax-webapp/solr/config"
+      DB_CLEANER_ALLOW_REMOTE_DB_URL: "true"
+      TB_RSPEC_FORMATTER: progress
+      TB_RSPEC_OPTIONS: --format RspecJunitFormatter --out rspec.xml
+    steps:
+      - name: Set env
+        run: >-
+          echo "TAG=${HEAD_TAG::8}" >> ${GITHUB_ENV};
+          echo ${HEAD_TAG::8}
+        env:
+          HEAD_TAG: ${{ github.event.pull_request.head.sha || github.sha }}
+        shell: bash
+      - name: Downcase repo
+        env:
+          REPO: "${{ github.repository }}"
+        run: |
+          echo "REPO_LOWER=${REPO,,}" >> ${GITHUB_ENV}
+        shell: bash
+      - name: Checkout code
+        uses: actions/checkout@v3
+        with:
+          submodules: true
+          token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v2
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v2
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@v2
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Pull image to prevent build
+        run: >-
+          touch .env.development;
+          touch .env;
+          docker-compose pull web
+      - name: Pull worker image to prevent build
+        run: >-
+          docker-compose pull worker
+      - name: Start containers
+        run: >-
+          [ -f "db/schema.rb" ] && chmod 777 db/schema.rb;
+          docker-compose up -d web
+      - name: Check for and setup Solr if needed
+        shell: bash
+        run: |
+          if [ -d solr ]
+          then
+            docker-compose exec -T web sh -c \
+            "solrcloud-upload-configset.sh "${CONFDIR}" &&
+            SOLR_COLLECTION_NAME=hydra-test solrcloud-assign-configset.sh &&
+            solrcloud-assign-configset.sh"
+          else
+            echo "No solr directory found, skipping..."
+          fi
+      - name: Setup db
+        run: >-
+          docker-compose exec -T web sh -c
+          "RAILS_ENV=test bundle exec rake db:create db:schema:load db:migrate"
+      - name: Run Specs
+        id: run-specs
+        env:
+          # Specifies how many jobs you would like to run in parallel,
+          # used for partitioning
+          CI_NODE_TOTAL: ${{ matrix.ci_node_total }}
+          # Use the index from matrix as an environment variable
+          CI_NODE_INDEX: ${{ matrix.ci_node_index }}
+        continue-on-error: true
+        run: >-
+          docker-compose exec -T web sh -c
+          "gem install semaphore_test_boosters && rspec_booster --job $CI_NODE_INDEX/$CI_NODE_TOTAL"
+      - name: Fail job if spec failure
+        run: if [[ ${{ steps.run-specs.outcome }} == "failure" ]]; then exit 1; else exit 0; fi
+      - name: Publish Test Report
+        uses: mikepenz/action-junit-report@v3
+        if: always() # always run even if the previous step fails
+        with:
+          report_paths: 'rspec*.xml'

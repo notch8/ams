@@ -1,4 +1,4 @@
-FROM solr:8.3
+FROM solr:8.3 as ams-solr
 ENV SOLR_USER="solr" \
     SOLR_GROUP="solr"
 USER root
