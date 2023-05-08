@@ -47,6 +47,11 @@ jobs:
           touch .env.development;
           touch .env;
           TAG=latest docker-compose pull web || true
+      - name: Setup tmate session
+        uses: mxschmitt/action-tmate@v3
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.debug_enabled }}
+        with:
+          limit-access-to-actor: true
       - name: Retag action for web
         id: meta-web
         uses: docker/metadata-action@v4.1.1
@@ -79,7 +84,8 @@ jobs:
           cache-from: type=registry,ref=${{ env.REGISTRY }}/${{ env.REPO_LOWER }}:${{ env.TAG }}
           context: .
           file: ./Dockerfile
-          platforms: "linux/amd64,linux/arm64"
+          # platforms: "linux/amd64,linux/arm64"
+          platforms: linux/amd64
           push: true
           tags: |
             ${{ steps.meta-web.outputs.tags }}
@@ -93,7 +99,8 @@ jobs:
           cache-from: type=registry,ref=${{ env.REGISTRY }}/${{ env.REPO_LOWER }}/worker:${{ env.TAG }}
           context: .
           file: ./Dockerfile
-          platforms: "linux/amd64,linux/arm64"
+          platforms: linux/amd64
+          # platforms: "linux/amd64,linux/arm64"
           push: true
           tags: |
             ${{ steps.meta-worker.outputs.tags }}
