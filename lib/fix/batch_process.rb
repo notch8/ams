@@ -2,8 +2,11 @@ module Fix
   class BatchProcess
     attr_reader :ids, :log, :cli_ptions, :log_level
 
-    def initialize(ids_file:, log_level: Logger::INFO)
-      @ids = File.readlines(ids_file, chomp: true)
+    def initialize(ids_file: nil, ids: [], log_level: Logger::INFO)
+      # Try reading ids from :ids_file first if it's given
+      @ids = File.readlines(ids_file, chomp: true) if ids_file
+      # Set ids to given param if not from a file
+      @ids ||= ids
       @cli_options = {}
       @log = Logger.new(STDOUT)
       @log.level = log_level
@@ -38,8 +41,8 @@ module Fix
       @cli_options ||= {}
     end
 
-    # self.option_parser Creates a default OptionParser for cli options and allows subclasses
-    # to add their own options.
+    # option_parser (class method) -- A default OptionParser for cli options that allows subclasses
+    # to add their own CLI options as needed.
     # @param block [Proc] A block that takes an OptionParser instance as an argument.
     # @return [OptionParser] The OptionParser instance.
     # Usage:
@@ -65,7 +68,7 @@ module Fix
         end
 
         # Allow file input of AAPB IDs
-        opts.on("-f", "--file FILE", "List of AAPB IDs, one per line") do |file|
+        opts.on("-f FILE", "--file FILE", "List of AAPB IDs, one per line") do |file|
           cli_options[:ids_file] = file
         end
       end
